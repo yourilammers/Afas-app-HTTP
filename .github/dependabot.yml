@@ -1,0 +1,41 @@
+version: 2
+
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    open-pull-requests-limit: 10
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Europe/Amsterdam"
+    commit-message:
+      prefix: "[PROD]"
+      prefix-development: "[DEV]"
+    groups:
+      application-ui:
+        patterns:
+          - "*@emotion*"
+          - "*@mui*"
+          - "*react*"
+        exclude-patterns:
+          - "@tanstack/react-query-devtools"
+      application-data:
+        patterns:
+          - "*@tanstack/*"
+      builder:
+        patterns:
+          - "@types/node"
+          - "*vite*"
+          - "typescript"
+        exclude-patterns:
+          - "@tanstack/router-vite-plugin"
+      linter:
+        patterns:
+          - "*eslint*"
+          - "*prettier*"
+        exclude-patterns:
+          - "@tanstack/eslint-plugin-query"
+      requests:
+        patterns:
+          - "*axios*"
