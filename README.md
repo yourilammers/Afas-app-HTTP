@@ -1,3 +1,404 @@
+### README: Azure Function and React Integration for Dynamic Forms
+## Overview
+
+This project demonstrates how to create a dynamic form system using Azure Functions, Azure Table Storage, and a React frontend. The Azure Function retrieves pipeline information along with form instructions from Azure Table Storage. The React frontend dynamically generates and displays these forms in a modal based on the instructions provided.
+Prerequisites
+
+    Azure account with an Azure Storage Account and Table Storage.
+    Azure Function App set up in your Azure account.
+    React development environment.
+
+## Setup Instructions
+# 1. Azure Table Storage
+
+Add a new column named InputFieldInstructions to your Azure Table Storage. This column should contain JSON instructions for the input fields required by each pipeline.
+
+Example of InputFieldInstructions JSON:
+
+json
+```
+{
+    "fields": [
+        {
+            "name": "username",
+            "type": "text",
+            "label": "Username",
+            "required": true
+        },
+        {
+            "name": "email",
+            "type": "text",
+            "label": "Email",
+            "required": true
+        },
+        {
+            "name": "password",
+            "type": "text",
+            "label": "Password",
+            "required": true
+        },
+        {
+            "name": "role",
+            "type": "text",
+            "label": "Role",
+            "required": false
+        }
+    ]
+}
+```
+# 2. Azure Function
+
+Ensure your Azure Function is set up to query the table and include the InputFieldInstructions in the response. Below is a sample function code snippet:
+
+python
+```
+import logging
+import json
+import azure.functions as func
+from azure.identity import DefaultAzureCredential
+from azure.data.tables import TableServiceClient
+import jwt
+from jwt.algorithms import RSAAlgorithm
+import requests
+
+## Environment variables or configurations
+STORAGE_ACCOUNT_NAME = "your_storage_account_name"
+TABLE_NAME = "your_table_name"
+CLIENT_ID = "your_client_id"
+TENANT_ID = "your_tenant_id"
+AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
+
+def get_email_from_token(token):
+    try:
+        jwks_url = f"{AUTHORITY}/discovery/v2.0/keys"
+        jwks_response = requests.get(jwks_url)
+        jwks = jwks_response.json()
+
+        unverified_header = jwt.get_unverified_header(token)
+        rsa_key = {}
+        for key in jwks["keys"]:
+            if key["kid"] == unverified_header["kid"]:
+                rsa_key = {
+                    "kty": key["kty"],
+                    "kid": key["kid"],
+                    "use": key["use"],
+                    "n": key["n"],
+                    "e": key["e"]
+                }
+
+        if rsa_key:
+            payload = jwt.decode(token, key=RSAAlgorithm.from_jwk(json.dumps(rsa_key)), algorithms=["RS256"], audience=f"api://{CLIENT_ID}")
+            email = payload.get("preferred_username") or payload.get("email") or payload.get("upn")
+            return email
+        else:
+            raise ValueError("Unable to find appropriate key")
+    except Exception as e:
+        logging.error(f"Token validation error: {e}")
+        return None
+
+def get_company_from_email(email):
+    try:
+        company_name = email.split('@')[1].split('.')[0]
+        return company_name
+    except Exception as e:
+        logging.error(f"Error extracting company name from email: {e}")
+        return None
+
+def query_pipelines(company_name):
+    try:
+        credential = DefaultAzureCredential()
+        table_service = TableServiceClient(endpoint=f"https://{STORAGE_ACCOUNT_NAME}.table.core.windows.net", credential=credential)
+        table_client = table_service.get_table_client(table_name=TABLE_NAME)
+
+        query_filter = f"PartitionKey eq '{company_name}'"
+        entities = table_client.query_entities(query_filter=query_filter)
+
+        pipelines = []
+        for entity in entities:
+            pipelines.append({
+                "name": entity.get("PipelineName"),
+                "link": entity.get("PipelineLink"),
+                "description": entity.get("PipelineDescription"),
+                "inputFieldInstructions": json.loads(entity.get("InputFieldInstructions", "{}"))
+            })
+
+        return pipelines
+    except Exception as e:
+        logging.error(f"Error querying pipelines: {e}")
+        return None
+
+def main(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        auth_header = req.headers.get('Authorization')
+        if not auth_header:
+            raise ValueError("Missing Authorization header")
+
+        token = auth_header.split(' ')[1]
+
+        email = get_email_from_token(token)
+        if not email:
+            raise ValueError("Invalid token or email extraction failed.")
+
+        company_name = get_company_from_email(email)
+        if not company_name:
+            raise ValueError("Failed to extract company name from email.")
+
+        pipelines = query_pipelines(company_name)
+        if pipelines is None:
+            raise ValueError("Failed to query pipelines.")
+
+        return func.HttpResponse(
+            body=json.dumps(pipelines),
+            mimetype="application/json",
+            status_code=200
+        )
+    except Exception as e:
+        logging.error(f"Error: {e}")
+        return func.HttpResponse(
+            body=f"An error occurred: {str(e)}",
+            status_code=500
+        )
+```
+## 3. React Frontend
+
+Ensure your React project is set up to dynamically render forms based on the instructions from the Azure Function. Below is an example of how to set this up.
+
+    Install Material-UI Components
+
+    bash
+
+    npm install @mui/material @emotion/react @emotion/styled
+
+    React Component
+
+    Here's the complete code for the React component that handles authentication, retrieves pipeline data, and displays dynamic forms in a modal:
+
+# javascript
+
+```
+import React, { useState, useEffect } from "react";
+import { PublicClientApplication, AccountInfo, InteractionRequiredAuthError } from "@azure/msal-browser";
+import axios from "axios";
+import { Container, Typography, Card, CardContent, CardActions, Button, Grid, Box, TextField, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle } from '@mui/material';
+
+// MSAL Configuration
+const msalConfig = {
+    auth: {
+        clientId: "99fbd4f5-fc2f-40c1-95fa-f8bcae8e8d94",
+        authority: "https://login.microsoftonline.com/a3b7e820-e897-498d-a4bf-c723c6f52ab6",
+        redirectUri: "http://localhost:3000"
+    }
+};
+
+const msalInstance = new PublicClientApplication(msalConfig);
+
+const storageRequest = {
+    scopes: ["api://99fbd4f5-fc2f-40c1-95fa-f8bcae8e8d94/acces_as_user"]
+};
+
+async function getAccessToken(account: AccountInfo) {
+    try {
+        const response = await msalInstance.acquireTokenSilent({
+            ...storageRequest,
+            account: account
+        });
+        return response.accessToken;
+    } catch (error) {
+        if (error instanceof InteractionRequiredAuthError) {
+            msalInstance.acquireTokenRedirect({
+                ...storageRequest,
+                account: account
+            });
+        } else {
+            throw error;
+        }
+    }
+}
+
+const PipelinesComponent: React.FC = () => {
+    const [account, setAccount] = useState<AccountInfo | null>(null);
+    const [pipelines, setPipelines] = useState<any[]>([]);
+    const [loading, setLoading] = useState<boolean>(true);
+    const [formData, setFormData] = useState<{ [key: string]: any }>({});
+    const [open, setOpen] = useState<boolean>(false);
+    const [currentPipeline, setCurrentPipeline] = useState<any>(null);
+
+    useEffect(() => {
+        const accounts = msalInstance.getAllAccounts();
+        if (accounts.length > 0) {
+            setAccount(accounts[0]);
+        } else {
+            msalInstance.loginRedirect().catch(error => {
+                console.error(error);
+            });
+        }
+    }, []);
+
+    useEffect(() => {
+        const fetchPipelines = async () => {
+            if (account) {
+                try {
+                    const accessToken = await getAccessToken(account);
+                    if (!accessToken) {
+                        console.error("No access token acquired.");
+                        return;
+                    }
+
+                    const response = await axios.get("http://localhost:7071/api/GetPipelines", {
+                        headers: {
+                            Authorization: `Bearer ${accessToken}`
+                        }
+                    });
+
+                    setPipelines(response.data);
+                } catch (error) {
+                    console.error("Error fetching pipelines:", error);
+                } finally {
+                    setLoading(false);
+                }
+            }
+        };
+
+        fetchPipelines();
+    }, [account]);
+
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>, field: any) => {
+        setFormData({
+            ...formData,
+            [field.name]: e.target.value
+        });
+    };
+
+    const renderField = (field: any) => {
+        switch (field.type) {
+            case 'int':
+                return (
+                    <TextField
+                        key={field.name}
+                        label={field.label}
+                        type="number"
+                        name={field.name}
+                        inputProps={{ min: field.min, max: field.max }}
+                        value={formData[field.name] || ''}
+                        onChange={(e) => handleChange(e, field)}
+                        fullWidth
+                        margin="normal"
+                        required={field.required}
+                    />
+                );
+            case 'text':
+                return (
+                    <TextField
+                        key={field.name}
+                        label={field.label}
+                        type="text"
+                        name={field.name}
+                        value={formData[field.name] || ''}
+                        onChange={(e) => handleChange(e, field)}
+                        fullWidth
+                        margin="normal"
+                        required={field.required}
+                    />
+                );
+            default:
+                return null;
+        }
+    };
+
+    const handleOpen = (pipeline: any) => {
+        setCurrentPipeline(pipeline);
+        if (pipeline.inputFieldInstructions?.fields) {
+            setOpen(true);
+        } else {
+            window.location.href = pipeline.link;
+        }
+    };
+
+    const handleClose = () => {
+        setOpen(false);
+        setFormData({});
+    };
+
+    const handleSubmit = () => {
+        console.log('Form Data:', formData);
+        handleClose();
+        window.location.href = currentPipeline.link;
+    };
+
+    return (
+        <Box sx={{ mt: 4, mx: 2 }}>
+            <Typography variant="h4" component="h1" gutterBottom>
+                Pipelines
+            </Typography>
+            {loading ? (
+                <Typography variant="body1" color="text.secondary">
+                    Loading...
+                </Typography>
+            ) : pipelines.length > 0 ? (
+                <Grid container spacing={3}>
+                    {pipelines.map((pipeline, index) => (
+                        <Grid item xs={12} sm={6} md={4} key={index}>
+                            <Card>
+                                <CardContent>
+                                    <Typography variant="h5" component="div">
+                                        {pipeline.name}
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                        {pipeline.description || "No description available"}
+                                    </Typography>
+                                </CardContent>
+                                <CardActions>
+                                    <Button size="small" variant="contained" color="primary" onClick={() => handleOpen(pipeline)}>
+                                        Start Pipeline
+                                    </Button>
+                                </CardActions>
+                            </Card>
+                        </Grid>
+                    ))}
+                </Grid>
+            ) : (
+                <Typography variant="body1" color="text.secondary">
+                    No pipelines found.
+                </Typography>
+            )}
+            <Dialog open={open} onClose={handleClose}>
+                <DialogTitle>Start Pipeline</DialogTitle>
+                <DialogContent>
+                    <DialogContentText>
+                        Please fill out the following form to start the pipeline.
+                    </DialogContentText>
+                    {currentPipeline && currentPipeline.inputFieldInstructions?.fields?.map((field: any) => renderField(field))}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={handleClose} color="secondary">
+                        Cancel
+                    </Button>
+                    <Button onClick={handleSubmit} color="primary">
+                        Start
+                    </Button>
+                </DialogActions>
+            </Dialog>
+        </Box>
+    );
+};
+
+export default PipelinesComponent;
+```
+
+# How It Works
+
+    Azure Function: The Azure Function queries the Azure Table Storage and includes the InputFieldInstructions column in the response.
+    React Frontend:
+        The React component uses MSAL to authenticate and obtain an access token.
+        The component fetches pipeline data from the Azure Function, which includes the form instructions.
+        When the "Start Pipeline" button is clicked, it checks if there are form instructions.
+            If form instructions exist, a modal dialog with the form is displayed.
+            If no form instructions exist, the user is redirected to the pipeline link directly.
+    Dynamic Form Rendering: The form fields are rendered dynamically inside a modal dialog based on the JSON instructions provided.
+
+
+
+
 # React single-page application built with MSAL React and Microsoft identity platform
 
 This sample demonstrates how to use [MSAL React](https://www.npmjs.com/package/@azure/msal-react) to login, logout, conditionally render components to authenticated users, and acquire an access token for a protected resource such as Microsoft Graph.
