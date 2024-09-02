@@ -50,7 +50,7 @@
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-testing-library": "^5.11.0",
     "eslint-plugin-vitest": "^0.3.26",
-    "happy-dom": "^9.20.3",
+    "happy-dom": "^15.7.3",
     "prettier": "^3.2.5",
     "typescript": "^5.4.5",
     "vite": "^4.5.3",
